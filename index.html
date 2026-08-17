@@ -2,7 +2,7 @@
 <html lang="en" data-theme="dark" data-accent="mint" data-density="comfy">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no, interactive-widget=resizes-content">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no, interactive-widget=resizes-content">
 <meta name="theme-color" content="#0c0f14">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -37,15 +37,19 @@
 }
 [data-density="compact"]{--pad:12px;--card-pad:12px;--fs:14px;--fs-sm:11.5px;--fs-hero:30px;--radius:14px}
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
-html,body{height:100%}
+html,body{height:100%;overflow:hidden;overscroll-behavior:none}
 body{
   background:var(--bg); color:var(--ink);
   font-family:'Manrope',system-ui,-apple-system,sans-serif;
   font-size:var(--fs); line-height:1.45;
-  max-width:520px; margin:0 auto;
-  padding-bottom:calc(104px + env(safe-area-inset-bottom));
-  overscroll-behavior-y:none;
+  position:fixed; inset:0;
 }
+#scroller{
+  position:absolute; inset:0; width:100%; max-width:520px; margin:0 auto;
+  overflow-y:auto; -webkit-overflow-scrolling:touch; overscroll-behavior:contain;
+}
+main{padding-bottom:calc(110px + env(safe-area-inset-bottom))}
+button,input,select,.sw,.loanrow{touch-action:manipulation}
 .num{font-variant-numeric:tabular-nums; letter-spacing:-.01em}
 header.app{
   position:sticky; top:0; z-index:20; background:var(--bg);
@@ -110,7 +114,7 @@ main{padding:0 var(--pad)}
 .field label{display:block;font-size:var(--fs-sm);font-weight:700;color:var(--ink2);margin-bottom:6px}
 .field input,.field select,.field textarea{
   width:100%;padding:12px 14px;border-radius:12px;border:1px solid var(--line);
-  background:var(--surface2);color:var(--ink);font-family:inherit;font-size:15.5px;font-weight:600;
+  background:var(--surface2);color:var(--ink);font-family:inherit;font-size:16px;font-weight:600;
   outline:none;
 }
 .field input:focus,.field select:focus{border-color:var(--acc)}
@@ -139,7 +143,7 @@ nav.bottom button{
 nav.bottom button .ic{font-size:20px;line-height:1}
 nav.bottom button.on{color:var(--acc)}
 .fab{
-  position:fixed;right:18px;bottom:calc(82px + env(safe-area-inset-bottom));z-index:35;
+  position:fixed;right:max(18px,calc(50vw - 242px));bottom:calc(82px + env(safe-area-inset-bottom));z-index:35;
   width:56px;height:56px;border-radius:20px;border:0;background:var(--acc);color:#0a0f0d;
   display:flex;align-items:center;justify-content:center;
   font-size:28px;font-weight:400;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.35);
@@ -160,7 +164,7 @@ nav.bottom button.on{color:var(--acc)}
 .toast{
   position:fixed;bottom:calc(90px + env(safe-area-inset-bottom));left:50%;transform:translate(-50%,10px);z-index:60;
   background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:99px;font-size:13.5px;font-weight:700;
-  opacity:0;pointer-events:none;transition:all .25s cubic-bezier(.23,1,.32,1);white-space:nowrap;
+  opacity:0;pointer-events:none;transition:all .25s cubic-bezier(.23,1,.32,1);max-width:88vw;text-align:center;
 }
 .toast.show{opacity:1;transform:translate(-50%,0)}
 .empty{text-align:center;padding:56px 24px;color:var(--ink2)}
@@ -186,7 +190,6 @@ input[type=range]{width:100%;accent-color:var(--acc);height:28px}
 .viewer .x{position:absolute;top:calc(14px + env(safe-area-inset-top));right:16px;background:rgba(255,255,255,.12);color:#fff;border:0;width:40px;height:40px;border-radius:50%;font-size:18px;cursor:pointer}
 .backbtn{display:flex;align-items:center;gap:6px;border:0;background:none;color:var(--ink2);font-family:inherit;font-weight:700;font-size:14px;cursor:pointer;padding:0}
 .warnnote{background:rgba(248,113,113,.1);border:1px solid rgba(248,113,113,.25);color:var(--danger);border-radius:12px;padding:10px 12px;font-size:13px;font-weight:600;margin-bottom:12px}
-html.lock,html.lock body{overflow:hidden;height:100%}
 .tabs{margin:0 0 12px}
 .pillrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
 .fadein{animation:fi .25s cubic-bezier(.23,1,.32,1)}
@@ -195,8 +198,10 @@ html.lock,html.lock body{overflow:hidden;height:100%}
 </style>
 </head>
 <body>
+<div id="scroller">
 <header class="app" id="hdr"></header>
 <main id="view"></main>
+</div>
 <nav class="bottom" id="bnav"></nav>
 <button class="fab" id="fab" onclick="openLoanForm()" aria-label="Add loan">+</button>
 <div id="overlay"></div>
@@ -353,24 +358,26 @@ function balanceChart(loan,st){
 /* ---------- navigation / rendering ---------- */
 let route={view:'dash',loanId:null,tab:'overview'};
 const $=id=>document.getElementById(id);
-let bodyY=0,suppressPop=false,overlayOpen=false;
-function lockBody(){bodyY=window.scrollY;document.documentElement.classList.add('lock');}
-function unlockBody(){document.documentElement.classList.remove('lock');window.scrollTo(0,bodyY);}
+let suppressPop=false,overlayOpen=false,noAnim=false;
+const SCR=document.getElementById('scroller');
+const FD=()=>noAnim?'':'${FD()}';
+function lockBody(){SCR.style.overflow='hidden';}
+function unlockBody(){SCR.style.overflow='';}
 function go(view,loanId,opts={}){
   route={view,loanId:loanId??route.loanId,tab:view==='detail'?(opts.tab||'overview'):route.tab};
   if(opts.replace)history.replaceState({route:{...route}},'');
   else history.pushState({route:{...route}},'');
-  render(); window.scrollTo(0,0);
+  render(); SCR.scrollTop=0;
 }
-/* re-render current view without losing scroll position */
-function rerender(){const y=window.scrollY;render();window.scrollTo(0,y);}
+/* re-render current view without losing scroll position or replaying animations */
+function rerender(){const y=SCR.scrollTop;noAnim=true;render();noAnim=false;SCR.scrollTop=y;}
 function setTab(t){route.tab=t;history.replaceState({route:{...route}},'');rerender();}
 function navBack(){history.back();}
 window.addEventListener('popstate',e=>{
   if(suppressPop){suppressPop=false;return;}
   if(overlayOpen){destroyOverlays();return;}
   route=(e.state&&e.state.route)?{...e.state.route}:{view:'dash',loanId:null,tab:'overview'};
-  render(); window.scrollTo(0,0);
+  render(); SCR.scrollTop=0;
 });
 history.replaceState({route:{...route}},'');
 function render(){
@@ -393,7 +400,7 @@ function renderDash(){
   $('hdr').innerHTML=`<h1>LoanTrack</h1>`;
   const v=$('view');
   if(!S.loans.length){
-    v.innerHTML=`<div class="empty fadein"><div class="ic">🏦</div>
+    v.innerHTML=`<div class="empty${FD()}"><div class="ic">🏦</div>
       <h3>No loans yet</h3>
       <p class="sub">Add a loan to start tracking EMIs, prepayments and your projected closure date.</p>
       <br><button class="btn" style="max-width:220px;margin:0 auto" onclick="openLoanForm()">Add a loan</button></div>`;
@@ -409,7 +416,7 @@ function renderDash(){
   const emiTotal=open.reduce((a,x)=>a+x.st.cur.emi,0);
 
   v.innerHTML=`
-  <div class="card hero fadein">
+  <div class="card hero${FD()}">
     <div class="label">Total outstanding</div>
     <div class="big num">${money(totOut)}</div>
     <div class="sub num">${money(totPrin-totOut)} of ${money(totPrin)} principal repaid</div>
@@ -423,7 +430,7 @@ function renderDash(){
   </div>
   <div class="section-h"><span class="label">Your loans</span></div>
   ${stats.map(({l,st})=>`
-    <div class="card fadein loanrow" onclick="go('detail','${l.id}')">
+    <div class="card${FD()} loanrow" onclick="go('detail','${l.id}')">
       ${ring(st.pct)}
       <div class="loanmeta">
         <h3>${esc(l.name)}</h3>
@@ -452,7 +459,7 @@ async function renderDetail(){
     <button class="iconbtn" onclick="openLoanForm('${l.id}')">✎</button>`;
 
   const hero=`
-  <div class="card hero fadein">
+  <div class="card hero${FD()}">
     <div style="display:flex;align-items:center;gap:16px">
       <div style="flex:1">
         <div class="label">Outstanding</div>
@@ -480,7 +487,7 @@ async function renderDetail(){
     const wmax=Math.max(10000,Math.ceil(st.cur.emi*2/5000)*5000);
     body=`
     ${st.cur.stalled?`<div class="warnnote">EMI doesn't cover monthly interest at the current rate — the balance never reduces. Raise the EMI or check the rate.</div>`:''}
-    <div class="card fadein">
+    <div class="card${FD()}">
       <div class="statgrid" style="margin-top:0">
         <div class="stat"><div class="label">Projected closure</div><div class="v num">${st.closed?'Closed':fmtKey(st.cur.closureKey)}</div></div>
         <div class="stat"><div class="label">Original closure</div><div class="v num">${fmtKey(st.base.closureKey)}</div></div>
@@ -491,7 +498,7 @@ async function renderDetail(){
       </div>
       ${balanceChart(l,st)}
     </div>
-    ${st.closed?'':`<div class="card fadein">
+    ${st.closed?'':`<div class="card${FD()}">
       <div class="label">What if I prepay extra every month?</div>
       <input type="range" id="wif" min="0" max="${wmax}" step="1000" value="0">
       <div style="display:flex;justify-content:space-between;align-items:baseline">
@@ -504,7 +511,7 @@ async function renderDetail(){
     const rchs=(l.rateChanges||[]).slice().sort((a,b)=>b.date.localeCompare(a.date));
     body=`
     <div class="section-h" style="margin-top:4px"><span class="label">Prepayments</span><button onclick="openPrepay('${l.id}')">+ Add</button></div>
-    <div class="card fadein">
+    <div class="card${FD()}">
       ${prepays.length?prepays.map(p=>`
         <div class="rowline">
           <div><div class="t num">${money(p.amount,true)}</div><div class="d">${fmtKey(str2key(p.date.slice(0,7)))}${p.note?` · ${esc(p.note)}`:''}</div></div>
@@ -512,7 +519,7 @@ async function renderDetail(){
         </div>`).join(''):`<div class="sub" style="padding:6px 0">No prepayments logged. Every lump sum you log here reshapes the projection — including a full payoff to close the loan.</div>`}
     </div>
     <div class="section-h"><span class="label">Rate changes</span><button onclick="openRate('${l.id}')">+ Add</button></div>
-    <div class="card fadein">
+    <div class="card${FD()}">
       ${rchs.length?rchs.map(r=>`
         <div class="rowline">
           <div><div class="t num">${r.rate}% p.a.</div><div class="d">from ${fmtKey(str2key(r.date.slice(0,7)))}</div></div>
@@ -522,7 +529,7 @@ async function renderDetail(){
   }else{
     body=`
     <div class="section-h" style="margin-top:4px"><span class="label">Documents</span><button onclick="$('docfile').click()">+ Upload</button></div>
-    <div class="card fadein" id="doclist"><div class="sub" style="padding:6px 0">Loading…</div></div>
+    <div class="card${FD()}" id="doclist"><div class="sub" style="padding:6px 0">Loading…</div></div>
     <input type="file" id="docfile" hidden multiple accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt">`;
   }
 
@@ -693,7 +700,7 @@ function delRate(loanId,id){
 function openLoanForm(id){
   route={view:'form',loanId:id||null,tab:route.tab};
   history.pushState({route:{...route}},'');
-  render(); window.scrollTo(0,0);
+  render(); SCR.scrollTop=0;
 }
 function renderForm(){
   const editing=route.loanId?S.loans.find(x=>x.id===route.loanId):null;
@@ -701,7 +708,7 @@ function renderForm(){
   $('hdr').innerHTML=`<button class="backbtn" onclick="navBack()">‹ Back</button>
     <h1 style="font-size:16px;flex:1;text-align:center">${editing?'Edit loan':'New loan'}</h1><div style="width:38px"></div>`;
   $('view').innerHTML=`
-  <div class="card fadein">
+  <div class="card${FD()}">
     <div class="field"><label>Loan name</label><input id="fName" value="${esc(l.name)}" placeholder="Home loan — HDFC"></div>
     <div class="fieldrow">
       <div class="field"><label>Lender</label><input id="fLender" value="${esc(l.lender)}" placeholder="HDFC"></div>
@@ -748,7 +755,7 @@ function renderSettings(){
   $('hdr').innerHTML=`<h1>Settings</h1>`;
   const s=S.settings;
   $('view').innerHTML=`
-  <div class="card fadein">
+  <div class="card${FD()}">
     <div class="label" style="margin-bottom:10px">Theme</div>
     <div class="seg" id="segTheme">
       ${[['dark','Dark'],['amoled','AMOLED'],['light','Light']].map(([v,t])=>`<button data-v="${v}" class="${s.theme===v?'on':''}">${t}</button>`).join('')}
@@ -769,7 +776,7 @@ function renderSettings(){
       <button data-v="compact" class="${s.density==='compact'?'on':''}">Compact</button>
     </div>
   </div>
-  <div class="card fadein">
+  <div class="card${FD()}">
     <div class="label" style="margin-bottom:10px">Data</div>
     <div class="btnrow">
       <button class="btn ghost" onclick="exportData()">Export backup</button>
