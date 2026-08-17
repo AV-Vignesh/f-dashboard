@@ -2,7 +2,7 @@
 <html lang="en" data-theme="dark" data-accent="mint" data-density="comfy">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no, interactive-widget=resizes-content">
 <meta name="theme-color" content="#0c0f14">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -152,7 +152,7 @@ nav.bottom button.on{color:var(--acc)}
 .sheet{
   position:fixed;bottom:0;left:50%;transform:translate(-50%,102%);width:100%;max-width:520px;z-index:41;
   background:var(--sheet);border-radius:22px 22px 0 0;padding:18px var(--pad) calc(20px + env(safe-area-inset-bottom));
-  max-height:88vh;overflow-y:auto;transition:transform .28s cubic-bezier(.23,1,.32,1);
+  max-height:88vh;max-height:88dvh;overflow-y:auto;overscroll-behavior:contain;transition:transform .28s cubic-bezier(.23,1,.32,1);
 }
 .sheet.show{transform:translate(-50%,0)}
 .sheet h2{font-size:17px;font-weight:800;margin-bottom:14px;letter-spacing:-.01em}
@@ -186,6 +186,9 @@ input[type=range]{width:100%;accent-color:var(--acc);height:28px}
 .viewer .x{position:absolute;top:calc(14px + env(safe-area-inset-top));right:16px;background:rgba(255,255,255,.12);color:#fff;border:0;width:40px;height:40px;border-radius:50%;font-size:18px;cursor:pointer}
 .backbtn{display:flex;align-items:center;gap:6px;border:0;background:none;color:var(--ink2);font-family:inherit;font-weight:700;font-size:14px;cursor:pointer;padding:0}
 .warnnote{background:rgba(248,113,113,.1);border:1px solid rgba(248,113,113,.25);color:var(--danger);border-radius:12px;padding:10px 12px;font-size:13px;font-weight:600;margin-bottom:12px}
+html.lock,html.lock body{overflow:hidden;height:100%}
+.tabs{margin:0 0 12px}
+.pillrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
 .fadein{animation:fi .25s cubic-bezier(.23,1,.32,1)}
 @keyframes fi{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
@@ -348,9 +351,28 @@ function balanceChart(loan,st){
 }
 
 /* ---------- navigation / rendering ---------- */
-let route={view:'dash',loanId:null};
+let route={view:'dash',loanId:null,tab:'overview'};
 const $=id=>document.getElementById(id);
-function go(view,loanId){ route={view,loanId:loanId??route.loanId}; render(); window.scrollTo(0,0); }
+let bodyY=0,suppressPop=false,overlayOpen=false;
+function lockBody(){bodyY=window.scrollY;document.documentElement.classList.add('lock');}
+function unlockBody(){document.documentElement.classList.remove('lock');window.scrollTo(0,bodyY);}
+function go(view,loanId,opts={}){
+  route={view,loanId:loanId??route.loanId,tab:view==='detail'?(opts.tab||'overview'):route.tab};
+  if(opts.replace)history.replaceState({route:{...route}},'');
+  else history.pushState({route:{...route}},'');
+  render(); window.scrollTo(0,0);
+}
+/* re-render current view without losing scroll position */
+function rerender(){const y=window.scrollY;render();window.scrollTo(0,y);}
+function setTab(t){route.tab=t;history.replaceState({route:{...route}},'');rerender();}
+function navBack(){history.back();}
+window.addEventListener('popstate',e=>{
+  if(suppressPop){suppressPop=false;return;}
+  if(overlayOpen){destroyOverlays();return;}
+  route=(e.state&&e.state.route)?{...e.state.route}:{view:'dash',loanId:null,tab:'overview'};
+  render(); window.scrollTo(0,0);
+});
+history.replaceState({route:{...route}},'');
 function render(){
   renderNav();
   const v=route.view;
@@ -419,99 +441,118 @@ function renderDash(){
     </div>`).join('')}`;
 }
 
-/* ---------- loan detail ---------- */
+/* ---------- loan detail (tabbed) ---------- */
 async function renderDetail(){
   const l=S.loans.find(x=>x.id===route.loanId);
-  if(!l){go('dash');return;}
+  if(!l){go('dash',null,{replace:true});return;}
   const st=loanStats(l);
-  $('hdr').innerHTML=`<button class="backbtn" onclick="go('dash')">‹ Loans</button>
+  const tab=route.tab||'overview';
+  $('hdr').innerHTML=`<button class="backbtn" onclick="navBack()">‹ Back</button>
     <h1 style="font-size:16px;text-align:center;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(l.name)}</h1>
     <button class="iconbtn" onclick="openLoanForm('${l.id}')">✎</button>`;
-  const prepays=(l.prepayments||[]).slice().sort((a,b)=>b.date.localeCompare(a.date));
-  const rchs=(l.rateChanges||[]).slice().sort((a,b)=>b.date.localeCompare(a.date));
-  const wmax=Math.max(10000,Math.ceil(st.cur.emi*2/5000)*5000);
 
-  $('view').innerHTML=`
-  ${st.cur.stalled?`<div class="warnnote">EMI doesn't cover monthly interest at the current rate — the balance never reduces. Raise the EMI or check the rate.</div>`:''}
+  const hero=`
   <div class="card hero fadein">
     <div style="display:flex;align-items:center;gap:16px">
       <div style="flex:1">
         <div class="label">Outstanding</div>
         <div class="big num">${money(st.outstanding)}</div>
-        <div class="sub num">of ${money(l.principal)} · started ${fmtKey(str2key(l.startDate))}</div>
+        <div class="sub num">of ${money(l.principal)} · EMI ${money(st.cur.emi)} · ${curRateOf(l,st)}%</div>
       </div>
       ${ring(st.pct,64)}
     </div>
-    <div class="statgrid">
-      <div class="stat"><div class="label">EMI</div><div class="v num">${money(st.cur.emi)}</div></div>
-      <div class="stat"><div class="label">Current rate</div><div class="v num">${curRateOf(l,st)}% p.a.</div></div>
-      <div class="stat"><div class="label">Projected closure</div><div class="v num">${st.closed?'Closed':fmtKey(st.cur.closureKey)}</div></div>
-      <div class="stat"><div class="label">Original closure</div><div class="v num">${fmtKey(st.base.closureKey)}</div></div>
-      <div class="stat"><div class="label">Months saved</div><div class="v num" style="color:var(--acc)">${st.monthsSaved}</div></div>
-      <div class="stat"><div class="label">Interest saved</div><div class="v num" style="color:var(--acc)">${money(st.interestSaved)}</div></div>
-      <div class="stat"><div class="label">Interest paid so far</div><div class="v num">${money(st.cur.paidInterest)}</div></div>
-      <div class="stat"><div class="label">Total interest (proj.)</div><div class="v num">${money(st.cur.totalInterest)}</div></div>
+    <div class="pillrow">
+      ${st.closed?`<span class="pill">Closed ${fmtKey(st.cur.closureKey)}</span>`
+        :`<span class="pill mut">Closes ${fmtKey(st.cur.closureKey)}</span>`}
+      ${st.monthsSaved>0?`<span class="pill">${st.monthsSaved} mo early</span>`:''}
+      ${st.interestSaved>0?`<span class="pill">${money(st.interestSaved)} interest saved</span>`:''}
     </div>
-    ${balanceChart(l,st)}
-  </div>
+  </div>`;
 
-  <div class="card fadein">
-    <div class="label">What if I prepay extra every month?</div>
-    <input type="range" id="wif" min="0" max="${wmax}" step="1000" value="0">
-    <div style="display:flex;justify-content:space-between;align-items:baseline">
-      <div class="v num" id="wifAmt" style="font-weight:800;font-size:17px">₹0 / month</div>
-      <div class="sub num" id="wifOut" style="text-align:right"></div>
+  const tabs=`<div class="seg tabs">
+    <button class="${tab==='overview'?'on':''}" onclick="setTab('overview')">Overview</button>
+    <button class="${tab==='activity'?'on':''}" onclick="setTab('activity')">Activity</button>
+    <button class="${tab==='docs'?'on':''}" onclick="setTab('docs')">Docs</button>
+  </div>`;
+
+  let body='';
+  if(tab==='overview'){
+    const wmax=Math.max(10000,Math.ceil(st.cur.emi*2/5000)*5000);
+    body=`
+    ${st.cur.stalled?`<div class="warnnote">EMI doesn't cover monthly interest at the current rate — the balance never reduces. Raise the EMI or check the rate.</div>`:''}
+    <div class="card fadein">
+      <div class="statgrid" style="margin-top:0">
+        <div class="stat"><div class="label">Projected closure</div><div class="v num">${st.closed?'Closed':fmtKey(st.cur.closureKey)}</div></div>
+        <div class="stat"><div class="label">Original closure</div><div class="v num">${fmtKey(st.base.closureKey)}</div></div>
+        <div class="stat"><div class="label">Interest paid so far</div><div class="v num">${money(st.cur.paidInterest)}</div></div>
+        <div class="stat"><div class="label">Total interest (proj.)</div><div class="v num">${money(st.cur.totalInterest)}</div></div>
+        <div class="stat"><div class="label">Started</div><div class="v num">${fmtKey(str2key(l.startDate))}</div></div>
+        <div class="stat"><div class="label">Tenure</div><div class="v num">${tenureStr(l.tenure)}</div></div>
+      </div>
+      ${balanceChart(l,st)}
     </div>
-  </div>
+    ${st.closed?'':`<div class="card fadein">
+      <div class="label">What if I prepay extra every month?</div>
+      <input type="range" id="wif" min="0" max="${wmax}" step="1000" value="0">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <div class="v num" id="wifAmt" style="font-weight:800;font-size:17px">₹0 / month</div>
+        <div class="sub num" id="wifOut" style="text-align:right"></div>
+      </div>
+    </div>`}`;
+  }else if(tab==='activity'){
+    const prepays=(l.prepayments||[]).slice().sort((a,b)=>b.date.localeCompare(a.date));
+    const rchs=(l.rateChanges||[]).slice().sort((a,b)=>b.date.localeCompare(a.date));
+    body=`
+    <div class="section-h" style="margin-top:4px"><span class="label">Prepayments</span><button onclick="openPrepay('${l.id}')">+ Add</button></div>
+    <div class="card fadein">
+      ${prepays.length?prepays.map(p=>`
+        <div class="rowline">
+          <div><div class="t num">${money(p.amount,true)}</div><div class="d">${fmtKey(str2key(p.date.slice(0,7)))}${p.note?` · ${esc(p.note)}`:''}</div></div>
+          <button style="border:0;background:none;color:var(--ink3);font-size:15px;cursor:pointer;padding:6px" onclick="delPrepay('${l.id}','${p.id}')">✕</button>
+        </div>`).join(''):`<div class="sub" style="padding:6px 0">No prepayments logged. Every lump sum you log here reshapes the projection — including a full payoff to close the loan.</div>`}
+    </div>
+    <div class="section-h"><span class="label">Rate changes</span><button onclick="openRate('${l.id}')">+ Add</button></div>
+    <div class="card fadein">
+      ${rchs.length?rchs.map(r=>`
+        <div class="rowline">
+          <div><div class="t num">${r.rate}% p.a.</div><div class="d">from ${fmtKey(str2key(r.date.slice(0,7)))}</div></div>
+          <button style="border:0;background:none;color:var(--ink3);font-size:15px;cursor:pointer;padding:6px" onclick="delRate('${l.id}','${r.id}')">✕</button>
+        </div>`).join(''):`<div class="sub" style="padding:6px 0">No revisions. For floating-rate loans, log each bank rate revision here.</div>`}
+    </div>`;
+  }else{
+    body=`
+    <div class="section-h" style="margin-top:4px"><span class="label">Documents</span><button onclick="$('docfile').click()">+ Upload</button></div>
+    <div class="card fadein" id="doclist"><div class="sub" style="padding:6px 0">Loading…</div></div>
+    <input type="file" id="docfile" hidden multiple accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt">`;
+  }
 
-  <div class="section-h"><span class="label">Prepayments</span><button onclick="openPrepay('${l.id}')">+ Add</button></div>
-  <div class="card fadein">
-    ${prepays.length?prepays.map(p=>`
-      <div class="rowline">
-        <div><div class="t num">${money(p.amount,true)}</div><div class="d">${fmtKey(str2key(p.date.slice(0,7)))}${p.note?` · ${esc(p.note)}`:''}</div></div>
-        <button class="del doc-del" style="border:0;background:none;color:var(--ink3);font-size:15px;cursor:pointer" onclick="delPrepay('${l.id}','${p.id}')">✕</button>
-      </div>`).join(''):`<div class="sub" style="padding:6px 0">No prepayments logged. Every lump sum you log here reshapes the projection.</div>`}
-  </div>
+  $('view').innerHTML=hero+tabs+body+'<div style="height:16px"></div>';
 
-  <div class="section-h"><span class="label">Rate changes</span><button onclick="openRate('${l.id}')">+ Add</button></div>
-  <div class="card fadein">
-    ${rchs.length?rchs.map(r=>`
-      <div class="rowline">
-        <div><div class="t num">${r.rate}% p.a.</div><div class="d">from ${fmtKey(str2key(r.date.slice(0,7)))}</div></div>
-        <button style="border:0;background:none;color:var(--ink3);font-size:15px;cursor:pointer" onclick="delRate('${l.id}','${r.id}')">✕</button>
-      </div>`).join(''):`<div class="sub" style="padding:6px 0">No revisions. For floating-rate loans, log each bank rate revision here.</div>`}
-  </div>
-
-  <div class="section-h"><span class="label">Documents</span><button onclick="$('docfile').click()">+ Upload</button></div>
-  <div class="card fadein" id="doclist"><div class="sub" style="padding:6px 0">Loading…</div></div>
-  <input type="file" id="docfile" hidden multiple accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt">
-
-  <button class="btn danger" onclick="deleteLoan('${l.id}')">Delete loan</button>
-  <div style="height:16px"></div>`;
-
-  /* what-if wiring */
-  const wif=$('wif');
-  const upd=()=>{
-    const x=+wif.value;
-    $('wifAmt').textContent=x?money(x,true)+' / month':'₹0 / month';
-    if(!x){$('wifOut').innerHTML=`<span class="sub">slide to see the impact</span>`;return;}
-    const sim=simulate(l,{extraMonthly:x});
-    const mSaved=Math.max(0,st.cur.months-sim.months);
-    const iSaved=Math.max(0,st.cur.totalInterest-sim.totalInterest);
-    $('wifOut').innerHTML=`Closes <b class="num" style="color:var(--acc)">${fmtKey(sim.closureKey)}</b><br>${mSaved} mo earlier · saves ${money(iSaved)}`;
-  };
-  wif.oninput=upd; upd();
-
-  /* docs */
-  $('docfile').onchange=async e=>{
-    for(const f of e.target.files){
-      if(f.size>15*1024*1024){toast(`${f.name} is over 15 MB, skipped`);continue;}
-      await docAdd({id:uid(),loanId:l.id,name:f.name,type:f.type,size:f.size,added:Date.now(),blob:f});
-    }
-    e.target.value=''; toast('Document saved on this device'); loadDocs(l.id);
-  };
-  loadDocs(l.id);
+  if(tab==='overview'&&!st.closed){
+    const wif=$('wif');
+    const upd=()=>{
+      const x=+wif.value;
+      $('wifAmt').textContent=x?money(x,true)+' / month':'₹0 / month';
+      if(!x){$('wifOut').innerHTML=`<span class="sub">slide to see the impact</span>`;return;}
+      const sim=simulate(l,{extraMonthly:x});
+      const mSaved=Math.max(0,st.cur.months-sim.months);
+      const iSaved=Math.max(0,st.cur.totalInterest-sim.totalInterest);
+      $('wifOut').innerHTML=`Closes <b class="num" style="color:var(--acc)">${fmtKey(sim.closureKey)}</b><br>${mSaved} mo earlier · saves ${money(iSaved)}`;
+    };
+    wif.oninput=upd; upd();
+  }
+  if(tab==='docs'){
+    $('docfile').onchange=async e=>{
+      for(const f of e.target.files){
+        if(f.size>15*1024*1024){toast(`${f.name} is over 15 MB, skipped`);continue;}
+        await docAdd({id:uid(),loanId:l.id,name:f.name,type:f.type,size:f.size,added:Date.now(),blob:f});
+      }
+      e.target.value=''; toast('Document saved on this device'); loadDocs(l.id);
+    };
+    loadDocs(l.id);
+  }
 }
+
 async function loadDocs(loanId){
   const el=$('doclist'); if(!el)return;
   let list=[]; try{list=await docList(loanId);}catch(e){el.innerHTML=`<div class="sub">Document storage unavailable in this browser.</div>`;return;}
@@ -530,16 +571,17 @@ async function loadDocs(loanId){
 async function openDoc(id){
   const d=await docGet(id); if(!d)return;
   const url=URL.createObjectURL(d.blob);
+  const showViewer=inner=>{
+    const w=document.createElement('div');w.className='viewer';
+    w.innerHTML=`<button class="x">✕</button>${inner}<div class="sub" style="color:#cbd5e1">${esc(d.name)}</div>`;
+    w.querySelector('.x').onclick=()=>{closeSheet();URL.revokeObjectURL(url);};
+    document.body.appendChild(w);
+    lockBody();overlayOpen=true;history.pushState({route:{...route},ov:1},'');
+  };
   if(d.type.startsWith('image')){
-    const w=document.createElement('div');w.className='viewer';
-    w.innerHTML=`<button class="x">✕</button><img src="${url}"><div class="sub" style="color:#cbd5e1">${esc(d.name)}</div>`;
-    w.querySelector('.x').onclick=()=>{w.remove();URL.revokeObjectURL(url);};
-    document.body.appendChild(w);
+    showViewer(`<img src="${url}">`);
   }else if(d.type==='application/pdf'){
-    const w=document.createElement('div');w.className='viewer';
-    w.innerHTML=`<button class="x">✕</button><iframe src="${url}" style="width:96vw;height:82vh;border:0;border-radius:8px;background:#fff"></iframe><div class="sub" style="color:#cbd5e1">${esc(d.name)}</div>`;
-    w.querySelector('.x').onclick=()=>{w.remove();URL.revokeObjectURL(url);};
-    document.body.appendChild(w);
+    showViewer(`<iframe src="${url}" style="width:96vw;height:82vh;border:0;border-radius:8px;background:#fff"></iframe>`);
   }else{
     const f=new File([d.blob],d.name,{type:d.type||'application/octet-stream'});
     if(navigator.canShare&&navigator.canShare({files:[f]})){
@@ -550,41 +592,83 @@ async function openDoc(id){
     setTimeout(()=>URL.revokeObjectURL(url),60000);
   }
 }
-async function removeDoc(id,loanId){ if(!confirm('Delete this document?'))return; await docDel(id); loadDocs(loanId); }
+async function removeDoc(id,loanId){ if(!confirm('Delete this document?'))return; await docDel(id); toast('Deleted'); loadDocs(loanId); }
 
-/* ---------- prepay / rate sheets ---------- */
+/* ---------- sheets & overlays ---------- */
 function sheet(html,onmount){
   const o=$('overlay');
   o.innerHTML=`<div class="scrim"></div><div class="sheet"><div class="grab"></div>${html}</div>`;
   const sc=o.querySelector('.scrim'),sh=o.querySelector('.sheet');
   requestAnimationFrame(()=>{sc.classList.add('show');sh.classList.add('show');});
   sc.onclick=closeSheet;
+  lockBody(); overlayOpen=true;
+  history.pushState({route:{...route},ov:1},'');
+  /* keep focused inputs visible above the keyboard */
+  sh.addEventListener('focusin',e=>{
+    if(/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName))
+      setTimeout(()=>e.target.scrollIntoView({block:'center',behavior:'smooth'}),250);
+  });
   if(onmount)onmount(sh);
 }
-function closeSheet(){
+function destroyOverlays(){
+  overlayOpen=false; unlockBody();
+  document.querySelectorAll('.viewer').forEach(v=>v.remove());
   const o=$('overlay'),sc=o.querySelector('.scrim'),sh=o.querySelector('.sheet');
-  if(!sh)return; sc.classList.remove('show');sh.classList.remove('show');
-  setTimeout(()=>o.innerHTML='',280);
+  if(sh){sc.classList.remove('show');sh.classList.remove('show');setTimeout(()=>o.innerHTML='',280);}
+}
+function closeSheet(){
+  destroyOverlays();
+  if(history.state&&history.state.ov){suppressPop=true;history.back();}
+}
+function balanceAt(loan,k){
+  if(k<str2key(loan.startDate))return loan.principal;
+  const sim=simulate(loan);
+  const row=sim.rows.find(r=>r.k===k);
+  if(row)return row.bal;
+  return k>sim.closureKey?0:loan.principal;
 }
 function openPrepay(loanId){
+  const l=S.loans.find(x=>x.id===loanId);
   const cur=key2str(NOWK);
   sheet(`<h2>Log a prepayment</h2>
+    <div class="field"><label>Month</label><input id="ppD" type="month" placeholder="YYYY-MM" value="${cur}">
+      <div class="hint num" id="ppBal"></div></div>
     <div class="field"><label>Amount (₹)</label><input id="ppA" type="number" inputmode="numeric" placeholder="50000"></div>
-    <div class="field"><label>Month</label><input id="ppD" type="month" placeholder="YYYY-MM" value="${cur}"></div>
-    <div class="field"><label>Note (optional)</label><input id="ppN" type="text" placeholder="Bonus, maturity, etc."></div>
+    <div class="field"><label>Note (optional)</label><input id="ppN" type="text" placeholder="Bonus, maturity, foreclosure…"></div>
+    <button class="btn ghost" id="ppFull" style="margin-bottom:10px">Pay full balance & close loan</button>
     <button class="btn" id="ppGo">Save prepayment</button>`,
-    sh=>{sh.querySelector('#ppGo').onclick=()=>{
-      const a=+sh.querySelector('#ppA').value, d=sh.querySelector('#ppD').value;
-      if(!a||a<=0||!validYM(d)){toast('Enter amount and month (YYYY-MM)');return;}
-      const l=S.loans.find(x=>x.id===loanId);
-      (l.prepayments=l.prepayments||[]).push({id:uid(),date:d,amount:a,note:sh.querySelector('#ppN').value.trim()});
-      save();closeSheet();toast('Prepayment logged');render();
-    };});
+    sh=>{
+      const dEl=sh.querySelector('#ppD'),aEl=sh.querySelector('#ppA'),balEl=sh.querySelector('#ppBal');
+      let curBal=0;
+      const updBal=()=>{
+        if(!validYM(dEl.value)){balEl.textContent='';return;}
+        curBal=balanceAt(l,str2key(dEl.value));
+        balEl.textContent=curBal>0
+          ?`Balance in ${fmtKey(str2key(dEl.value))} after that month's EMI: ${money(curBal,true)} — pay this to close.`
+          :`Loan is already projected closed by ${fmtKey(str2key(dEl.value))}.`;
+      };
+      dEl.oninput=updBal; dEl.onchange=updBal; updBal();
+      sh.querySelector('#ppFull').onclick=()=>{
+        if(curBal<=0){toast('Nothing left to pay in that month');return;}
+        aEl.value=Math.ceil(curBal);
+        const nEl=sh.querySelector('#ppN'); if(!nEl.value)nEl.value='Foreclosure';
+        toast('Amount set to full payoff — hit Save');
+      };
+      sh.querySelector('#ppGo').onclick=()=>{
+        const a=+aEl.value, d=dEl.value;
+        if(!a||a<=0||!validYM(d)){toast('Enter amount and month (YYYY-MM)');return;}
+        (l.prepayments=l.prepayments||[]).push({id:uid(),date:d,amount:a,note:sh.querySelector('#ppN').value.trim()});
+        save();closeSheet();
+        const closedNow=loanStats(l).closed;
+        toast(closedNow?'Loan closed 🎉':'Prepayment logged');
+        rerender();
+      };
+    });
 }
 function delPrepay(loanId,id){
   const l=S.loans.find(x=>x.id===loanId);
   l.prepayments=(l.prepayments||[]).filter(p=>p.id!==id);
-  save();render();toast('Removed');
+  save();rerender();toast('Removed');
 }
 function openRate(loanId){
   const l=S.loans.find(x=>x.id===loanId);
@@ -596,21 +680,25 @@ function openRate(loanId){
       const r=+sh.querySelector('#rcR').value,d=sh.querySelector('#rcD').value;
       if(!r||r<=0||r>40||!validYM(d)){toast('Enter a valid rate and month (YYYY-MM)');return;}
       (l.rateChanges=l.rateChanges||[]).push({id:uid(),date:d,rate:r});
-      save();closeSheet();toast('Rate revision saved');render();
+      save();closeSheet();toast('Rate revision saved');rerender();
     };});
 }
 function delRate(loanId,id){
   const l=S.loans.find(x=>x.id===loanId);
   l.rateChanges=(l.rateChanges||[]).filter(r=>r.id!==id);
-  save();render();toast('Removed');
+  save();rerender();toast('Removed');
 }
 
 /* ---------- add / edit loan ---------- */
-function openLoanForm(id){ route={view:'form',loanId:id||null}; render(); window.scrollTo(0,0); }
+function openLoanForm(id){
+  route={view:'form',loanId:id||null,tab:route.tab};
+  history.pushState({route:{...route}},'');
+  render(); window.scrollTo(0,0);
+}
 function renderForm(){
   const editing=route.loanId?S.loans.find(x=>x.id===route.loanId):null;
   const l=editing||{name:'',lender:'',type:'Home',principal:'',rate:'',tenure:'',startDate:key2str(NOWK),emi:''};
-  $('hdr').innerHTML=`<button class="backbtn" onclick="go(${editing?`'detail'`:`'dash'`})">‹ Back</button>
+  $('hdr').innerHTML=`<button class="backbtn" onclick="navBack()">‹ Back</button>
     <h1 style="font-size:16px;flex:1;text-align:center">${editing?'Edit loan':'New loan'}</h1><div style="width:38px"></div>`;
   $('view').innerHTML=`
   <div class="card fadein">
@@ -630,6 +718,7 @@ function renderForm(){
     <div class="field"><label>EMI (₹) — leave blank to auto-calculate</label><input id="fE" type="number" inputmode="numeric" value="${l.emi||''}" placeholder="auto">
       <div class="hint num" id="emiHint"></div></div>
     <button class="btn" id="fGo">${editing?'Save changes':'Add loan'}</button>
+    ${editing?`<button class="btn danger" style="margin-top:10px" onclick="deleteLoan('${editing.id}')">Delete loan</button>`:''}
   </div>`;
   const hint=()=>{
     const P=+$('fP').value,R=+$('fR').value,T=+$('fT').value;
@@ -644,14 +733,14 @@ function renderForm(){
     if(E>0&&E<=P*R/1200){toast('EMI is below monthly interest — it will never close');return;}
     const rec={...(editing||{id:uid(),prepayments:[],rateChanges:[]}),name,lender:$('fLender').value.trim(),type:$('fType').value,principal:P,rate:R,tenure:T,startDate:Sd,emi:E>0?E:null};
     if(editing){const i=S.loans.findIndex(x=>x.id===editing.id);S.loans[i]=rec;}else S.loans.push(rec);
-    save();toast(editing?'Saved':'Loan added');go('detail',rec.id);
+    save();toast(editing?'Saved':'Loan added');go('detail',rec.id,{replace:true});
   };
 }
 async function deleteLoan(id){
   if(!confirm('Delete this loan and all its documents? This cannot be undone.'))return;
   S.loans=S.loans.filter(x=>x.id!==id); save();
   try{await docDelByLoan(id);}catch(e){}
-  toast('Loan deleted'); go('dash');
+  toast('Loan deleted'); go('dash',null,{replace:true});
 }
 
 /* ---------- settings ---------- */
@@ -691,7 +780,7 @@ function renderSettings(){
     <br><button class="btn danger" onclick="wipeAll()">Erase all data</button>
   </div>
   <div class="sub" style="text-align:center;padding:8px 0 20px">All data lives on this device only. Nothing is sent anywhere.</div>`;
-  const wire=(id,key)=>{$(id).querySelectorAll('button,.sw').forEach(b=>b.onclick=()=>{S.settings[key]=b.dataset.v;save();applyPrefs();renderSettings();renderNav();});};
+  const wire=(id,key)=>{$(id).querySelectorAll('button,.sw').forEach(b=>b.onclick=()=>{S.settings[key]=b.dataset.v;save();applyPrefs();rerender();});};
   wire('segTheme','theme');wire('swAcc','accent');wire('segCur','currency');wire('segDen','density');
   $('impfile').onchange=e=>{
     const f=e.target.files[0]; if(!f)return;
